@@ -9,6 +9,7 @@ const app = express();
 const port = Number(process.env.PORT) || 3001;
 const fallbackUrl = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 const flixhq = new MOVIES.FlixHQ();
+type StreamTarget = { url: string; referer: string };
 
 const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   let timeout: NodeJS.Timeout;
@@ -39,6 +40,48 @@ const getTitle = (title: IMovieResult['title']): string => {
 const getQuality = (quality: string | undefined): number => {
   const match = quality?.match(/(\d+)p/i);
   return match ? Number(match[1]) : 0;
+};
+
+const getEdgeTargets = (
+  type: string,
+  id: string,
+  season: string | undefined,
+  episode: string | undefined,
+): StreamTarget[] => {
+  const isTv = type.toLowerCase() === 'tv';
+  const tvPath = `${id}/${season || 1}/${episode || 1}`;
+
+  return [
+    {
+      url: `https://vidsrc.cc/v2/embed/${isTv ? `tv/${tvPath}` : `movie/${id}`}`,
+      referer: 'https://vidsrc.cc/',
+    },
+    {
+      url: `https://vidlink.pro/${isTv ? `tv/${tvPath}` : `movie/${id}`}`,
+      referer: 'https://vidlink.pro/',
+    },
+  ];
+};
+
+const probeEdgeTarget = async (target: StreamTarget): Promise<StreamTarget> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(target.url, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+
+    if (!response.ok && response.status !== 301 && response.status !== 302) {
+      throw new Error(`Edge provider returned ${response.status}`);
+    }
+
+    return target;
+  } finally {
+    clearTimeout(timeout);
+  }
 };
 
 const fetchTmdbTitle = async (type: string, id: string): Promise<string | undefined> => {
@@ -113,6 +156,26 @@ const resolveStream = async (
   return hlsSources[0].url;
 };
 
+const resolveMultiProvider = async (
+  type: string,
+  id: string,
+  season: string | undefined,
+  episode: string | undefined,
+): Promise<StreamTarget> => {
+  for (const target of getEdgeTargets(type, id, season, episode)) {
+    try {
+      return await probeEdgeTarget(target);
+    } catch {
+      continue;
+    }
+  }
+
+  return {
+    url: await resolveStream(type, id, season, episode),
+    referer: 'https://flixhq.to/',
+  };
+};
+
 app.use(cors());
 app.use(express.json());
 
@@ -145,9 +208,9 @@ app.get('/api/resolve', async (req, res) => {
   console.log(`[Resolver] Resolving type=${type}, id=${id}`);
 
   try {
-    const url = await withTimeout(resolveStream(type, id, season, episode), 5000);
+    const target = await withTimeout(resolveMultiProvider(type, id, season, episode), 5000);
 
-    return res.json({ url, referer: 'https://flixhq.to/' });
+    return res.json(target);
   } catch {
     console.warn('[Resolver Warning] Scraper timed out or blocked by host. Using secondary stream proxy.');
     return res.json({

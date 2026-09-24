@@ -35,6 +35,38 @@ const getQuality = (quality) => {
     const match = quality?.match(/(\d+)p/i);
     return match ? Number(match[1]) : 0;
 };
+const getEdgeTargets = (type, id, season, episode) => {
+    const isTv = type.toLowerCase() === 'tv';
+    const tvPath = `${id}/${season || 1}/${episode || 1}`;
+    return [
+        {
+            url: `https://vidsrc.cc/v2/embed/${isTv ? `tv/${tvPath}` : `movie/${id}`}`,
+            referer: 'https://vidsrc.cc/',
+        },
+        {
+            url: `https://vidlink.pro/${isTv ? `tv/${tvPath}` : `movie/${id}`}`,
+            referer: 'https://vidlink.pro/',
+        },
+    ];
+};
+const probeEdgeTarget = async (target) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1500);
+    try {
+        const response = await fetch(target.url, {
+            method: 'HEAD',
+            redirect: 'manual',
+            signal: controller.signal,
+        });
+        if (!response.ok && response.status !== 301 && response.status !== 302) {
+            throw new Error(`Edge provider returned ${response.status}`);
+        }
+        return target;
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+};
 const fetchTmdbTitle = async (type, id) => {
     const apiKey = process.env.TMDB_API_KEY;
     if (!apiKey) {
@@ -85,6 +117,20 @@ const resolveStream = async (type, id, season, episode) => {
     }
     return hlsSources[0].url;
 };
+const resolveMultiProvider = async (type, id, season, episode) => {
+    for (const target of getEdgeTargets(type, id, season, episode)) {
+        try {
+            return await probeEdgeTarget(target);
+        }
+        catch {
+            continue;
+        }
+    }
+    return {
+        url: await resolveStream(type, id, season, episode),
+        referer: 'https://flixhq.to/',
+    };
+};
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());
 app.get('/', (_req, res) => {
@@ -111,8 +157,8 @@ app.get('/api/resolve', async (req, res) => {
     }
     console.log(`[Resolver] Resolving type=${type}, id=${id}`);
     try {
-        const url = await withTimeout(resolveStream(type, id, season, episode), 5000);
-        return res.json({ url, referer: 'https://flixhq.to/' });
+        const target = await withTimeout(resolveMultiProvider(type, id, season, episode), 5000);
+        return res.json(target);
     }
     catch {
         console.warn('[Resolver Warning] Scraper timed out or blocked by host. Using secondary stream proxy.');
