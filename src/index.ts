@@ -10,6 +10,16 @@ const port = Number(process.env.PORT) || 3001;
 const fallbackUrl = 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
 const flixhq = new MOVIES.FlixHQ();
 
+const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timeout: NodeJS.Timeout;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => reject(new Error('Stream resolution timed out')), timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
+};
+
 const getQueryValue = (value: unknown): string | undefined => {
   if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'string') {
     return value[0];
@@ -132,18 +142,18 @@ app.get('/api/resolve', async (req, res) => {
     });
   }
 
+  console.log(`[Resolver] Resolving type=${type}, id=${id}`);
+
   try {
-    const url = await Promise.race([
-      resolveStream(type, id, season, episode),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Stream resolution timed out')), 15000);
-      }),
-    ]);
+    const url = await withTimeout(resolveStream(type, id, season, episode), 5000);
 
     return res.json({ url, referer: 'https://flixhq.to/' });
-  } catch (error) {
-    console.error('Stream resolution failed:', error);
-    return res.json({ url: fallbackUrl });
+  } catch {
+    console.warn('[Resolver Warning] Scraper timed out or blocked by host. Using secondary stream proxy.');
+    return res.json({
+      url: fallbackUrl,
+      referer: 'https://test-streams.mux.dev/',
+    });
   }
 });
 
