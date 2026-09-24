@@ -18,7 +18,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "cors": "^2.8.8",
+    "@consumet/extensions": "^1.8.8",
+    "cors": "^2.8.6",
     "dotenv": "^18.0.3",
     "express": "^5.2.1"
   },
